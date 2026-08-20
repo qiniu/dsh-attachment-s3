@@ -1,0 +1,92 @@
+{
+  "name": "@guaguasong/dsh-attachment-s3",
+  "description": "Content-addressed S3 attachment storage for the DeepSeek Harness attachment seam",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "attachment",
+    "s3",
+    "object-storage"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/guaguasong/dsh-attachment-s3.git"
+  },
+  "bugs": {
+    "url": "https://github.com/guaguasong/dsh-attachment-s3/issues"
+  },
+  "homepage": "https://github.com/guaguasong/dsh-attachment-s3#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.js.map",
+    "lib/**/*.d.ts",
+    "lib/**/*.d.ts.map",
+    "src/**/*.ts",
+    "scripts/probe-compat.mjs",
+    "cordis.patch.yml"
+  ],
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf lib",
+    "prepare": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "prepublishOnly": "pnpm run clean && pnpm run typecheck && pnpm run test && pnpm run build",
+    "probe": "node scripts/probe-compat.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-attachment": ">=0.1.0-rc.8",
+    "@deepseek-ai/dsh-invariants": ">=0.1.0-rc.8"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-invariants": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.699.0",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-attachment": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.8",
+    "@types/node": "^22.20.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.8"
+  }
+}

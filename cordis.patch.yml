@@ -1,0 +1,37 @@
+# The dsh-attachment-s3 bundle patch: swap the profile's attachment backend
+# for a bucket. Applied as one layer after the bundles already in the profile's
+# stack, so it can address the row `dsh-base` inserted.
+#
+# The attachment seam takes exactly one provider, so the local backend is
+# disabled rather than left beside this one. A profile whose stack has no
+# `attachment-local` row (a composition that never loaded dsh-base) logs a
+# skipped-patch warning and keeps booting.
+#
+# Every value is read from the environment at mount, so installing the bundle
+# does not bake a bucket into the profile. `bucket` is required: with
+# DSH_ATTACHMENT_S3_BUCKET unset, the boot fails on this row instead of
+# silently storing attachments somewhere else. Credential values are never read
+# here — DSH_ATTACHMENT_S3_ACCESS_KEY_ID_REF names the environment variable
+# holding the key, and leaving both refs unset signs with the AWS SDK's own
+# chain (shared config, container role, instance role). Encryption, storage
+# class, and lifecycle stay bucket-side policy.
+#
+# Override any of this in $DSH_HOME/profiles/<name>/cordis.patch.yml, which is
+# applied after every bundle layer; an id-targeted patch replaces the whole
+# `config`, so restate the fields you keep.
+- id: attachment-local
+  name: '@deepseek-ai/dsh-attachment-local'
+  disabled: true
+
+- insert:
+    - id: attachment-s3
+      name: '@guaguasong/dsh-attachment-s3'
+      config:
+        bucket: !!js process.env.DSH_ATTACHMENT_S3_BUCKET
+        region: !!js process.env.DSH_ATTACHMENT_S3_REGION
+        endpoint: !!js process.env.DSH_ATTACHMENT_S3_ENDPOINT
+        forcePathStyle: !!js process.env.DSH_ATTACHMENT_S3_FORCE_PATH_STYLE === 'true'
+        prefix: !!js process.env.DSH_ATTACHMENT_S3_PREFIX
+        accessKeyIdRef: !!js process.env.DSH_ATTACHMENT_S3_ACCESS_KEY_ID_REF
+        secretAccessKeyRef: !!js process.env.DSH_ATTACHMENT_S3_SECRET_ACCESS_KEY_REF
+        sessionTokenRef: !!js process.env.DSH_ATTACHMENT_S3_SESSION_TOKEN_REF
