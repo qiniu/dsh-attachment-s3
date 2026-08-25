@@ -37,6 +37,7 @@ bundle patch 在挂载时从环境读取配置。`DSH_` 前缀的名字必须来
 | `DSH_ATTACHMENT_S3_ACCESS_KEY_ID_REF` | `accessKeyIdRef` —— 持有密钥的变量**名字**，不是密钥本身 |
 | `DSH_ATTACHMENT_S3_SECRET_ACCESS_KEY_REF` | `secretAccessKeyRef` |
 | `DSH_ATTACHMENT_S3_SESSION_TOKEN_REF` | `sessionTokenRef` |
+| `DSH_ATTACHMENT_S3_VARIANT_CACHE_DIR` | `variantCacheDir` |
 
 不想依赖环境变量，就把该行固定写进 `$DSH_HOME/profiles/<name>/cordis.patch.yml`——它在所有 bundle 层之后应用。按 id 定位的 patch 会替换整个 `config`，要保留的字段需一并重述：
 
@@ -60,13 +61,16 @@ bundle patch 在挂载时从环境读取配置。`DSH_` 前缀的名字必须来
 | `accessKeyIdRef` | — | 持有 access key id 的环境变量名。 |
 | `secretAccessKeyRef` | — | 持有 secret access key 的环境变量名。 |
 | `sessionTokenRef` | — | 持有 session token 的环境变量名。 |
-| `maxImageBytes` | 5 MiB | 单张图片最大编码字节数。 |
+| `maxImageBytes` | 20 MiB | 提交的单张图片最大编码字节数。 |
 | `maxImagesPerMessage` | 20 | 单条消息最大图片数。 |
-| `maxMessageImageBytes` | 100 MiB | 单条消息图片编码字节总量上限。 |
-| `maxImagePixels` | 40,000,000 | 单张图片固有宽 × 高上限。 |
-| `maxImageDimension` | 2000 | 单张图片固有宽、高各自的上限（按边）。 |
+| `maxMessageImageBytes` | 200 MiB | 单条消息图片编码字节总量上限。 |
+| `maxImagePixels` | 64,000,000 | 提交的单张图片固有宽 × 高上限。 |
+| `maxImageDimension` | 8192 | 单张图片固有宽、高各自的上限（按边）。 |
+| `normalizedImageMaxDimension` | 2048 | 入库图片的长边；超过的会被缩到这个尺寸。 |
+| `normalizedImageMaxBytes` | 4 MiB | 入库图片的字节预算。 |
+| `variantCacheDir` | Harness home 下 | 派生请求图片的本地缓存目录。 |
 
-准入限额默认值与本地后端一致，换后端不会改变一个部署接受哪些图片。bucket 本就管辖的对象策略——默认加密、存储类别、生命周期——交给 bucket。
+准入、归一化、请求图片派生都委托给内置的 `@deepseek-ai/dsh-attachment-local`——它把这些能力导出为普通函数；上表的默认值也是从它再导出而非另抄一份。这样两个后端共用同一套编码策略：同一张图被接受、入库、送到模型面前的结果都一致，本包只负责 bucket 那一半。bucket 本就管辖的对象策略——默认加密、存储类别、生命周期——交给 bucket。
 
 配置里携带的是凭据**引用**而非值，与 harness 的[凭据 seam](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/credentials/credentials) 一致。每次请求重新解析：加载了凭据 provider 就走 `ctx.credentials`，否则走进程环境，因此轮换后的密钥下一次请求即生效。两个 key 引用要么都写要么都不写：只写一半会在加载时失败，而不是悄悄用 SDK 环境里的默认身份签名。都不写正是实例角色部署的常规做法。
 
@@ -77,6 +81,8 @@ bundle patch 在挂载时从环境读取配置。`DSH_` 前缀的名字必须来
 ```
 
 每张不同的图片一个不可变对象：`Content-Type` 为校验过的媒体类型，SHA-256 作为对象校验和发送，固有 `width`/`height` 记入对象元数据。会话日志里记的是 `sha256:<hex>`——不透明 id，既不是键也不是 URL。前缀里的 `v1` 段把未来不兼容的布局隔开。
+
+进 bucket 的是**归一化之后**的图片，而不是提交的原始字节：准入会把过大的源缩到入库长边并按字节预算重编码，引用里记下原始尺寸。送进模型请求的那一版则按需从入库对象派生、缓存在本地——它可复现，不该占 bucket。
 
 - **一次写入。** 上传是条件写（`If-None-Match: *`），并发写入相同字节的写者不会互相覆盖。竞争失败的一方不重传，而是校验已存在的对象：有校验和就比校验和，不搬字节；没有就把对象读回来比对——否则等长替换会让这次保存发布一个之后永远读不出来的引用。
 - **读取即校验。** 读取只请求引用声明的字节范围，回来后重算摘要并重解析图片头，因此 bucket 侧的替换以 `ATTACHMENT_CORRUPT` 暴露，不会进入模型请求。

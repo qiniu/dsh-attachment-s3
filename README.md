@@ -37,6 +37,7 @@ The bundle patch reads its values from the environment at mount. `DSH_`-prefixed
 | `DSH_ATTACHMENT_S3_ACCESS_KEY_ID_REF` | `accessKeyIdRef` — the **name** of the variable holding the key, not the key |
 | `DSH_ATTACHMENT_S3_SECRET_ACCESS_KEY_REF` | `secretAccessKeyRef` |
 | `DSH_ATTACHMENT_S3_SESSION_TOKEN_REF` | `sessionTokenRef` |
+| `DSH_ATTACHMENT_S3_VARIANT_CACHE_DIR` | `variantCacheDir` |
 
 To pin configuration instead of reading the environment, restate the row in `$DSH_HOME/profiles/<name>/cordis.patch.yml`, which is applied after every bundle layer. An id-targeted patch replaces the row's whole `config`, so restate the fields you keep:
 
@@ -60,13 +61,16 @@ To pin configuration instead of reading the environment, restate the row in `$DS
 | `accessKeyIdRef` | — | Environment-variable name holding the access key id. |
 | `secretAccessKeyRef` | — | Environment-variable name holding the secret access key. |
 | `sessionTokenRef` | — | Environment-variable name holding a session token. |
-| `maxImageBytes` | 5 MiB | Maximum encoded bytes for one image. |
+| `maxImageBytes` | 20 MiB | Maximum encoded bytes for one submitted image. |
 | `maxImagesPerMessage` | 20 | Maximum images in one submitted message. |
-| `maxMessageImageBytes` | 100 MiB | Maximum aggregate encoded image bytes in one message. |
-| `maxImagePixels` | 40,000,000 | Maximum intrinsic width × height for one image. |
-| `maxImageDimension` | 2000 | Maximum intrinsic width and height, applied per side. |
+| `maxMessageImageBytes` | 200 MiB | Maximum aggregate encoded image bytes in one message. |
+| `maxImagePixels` | 64,000,000 | Maximum intrinsic width × height for one submitted image. |
+| `maxImageDimension` | 8192 | Maximum intrinsic width and height, applied per side. |
+| `normalizedImageMaxDimension` | 2048 | Long edge of the stored image; a larger admitted image is downscaled to it. |
+| `normalizedImageMaxBytes` | 4 MiB | Byte budget of the stored image. |
+| `variantCacheDir` | under the Harness home | Local cache of derived request images. |
 
-The admission limits carry the same defaults as the local backend, so switching backends does not change which images a deployment accepts. Object policy a bucket already owns — default encryption, storage class, lifecycle — is left to the bucket.
+Admission, normalization, and request-image derivation are delegated to the in-box `@deepseek-ai/dsh-attachment-local` package, which exports them as plain functions; the defaults above are re-exported from it rather than restated. That keeps one encoder policy across both backends — the same image is accepted, stored, and put in front of a model either way — and leaves this package owning only the bucket. Object policy a bucket already owns — default encryption, storage class, lifecycle — is left to the bucket.
 
 Configuration carries credential **references**, never values, matching the harness [credential seam](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/credentials/credentials). Each is resolved per request, through `ctx.credentials` when a credential provider is loaded and through the process environment otherwise, so a rotated secret reaches the next request without a restart. Declare both key references or neither: a half-declared pair fails at load instead of silently signing as the SDK's ambient identity. Declaring neither is the normal deployment on an instance role.
 
@@ -77,6 +81,8 @@ Configuration carries credential **references**, never values, matching the harn
 ```
 
 One immutable object per distinct image, `Content-Type` set to the verified media type, the SHA-256 sent as the object checksum, and the intrinsic `width`/`height` recorded as object metadata. The session log records `sha256:<hex>` — an opaque id, never a key or a URL. The `v1` segment fences a future incompatible layout off from stored objects.
+
+What lands in the bucket is the **normalized** image, not the submitted bytes: admission downscales a large source to the stored long edge and re-encodes it under a byte budget, and the reference records the original dimensions. The version a model request carries is derived from the stored object on demand and cached locally, since it is reproducible and does not belong in the bucket.
 
 - **Write-once.** Uploads are conditional (`If-None-Match: *`), so concurrent writers of identical bytes never overwrite each other. The writer that loses the race verifies what is already stored instead of republishing it: the recorded checksum settles it without moving bytes, and an object stored without one is read back and compared, because a same-length substitution would otherwise publish a reference no later read can return.
 - **Verified reads.** A read requests exactly the byte range the reference claims, re-hashes the bytes, and re-derives the image header before returning, so a bucket-side substitution surfaces as `ATTACHMENT_CORRUPT` instead of reaching a model request.

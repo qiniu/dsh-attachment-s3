@@ -1,7 +1,7 @@
 {
   "name": "@guaguasong/dsh-attachment-s3",
   "description": "Content-addressed S3 attachment storage for the DeepSeek Harness attachment seam",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -67,8 +67,8 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-attachment": ">=0.1.0-rc.8",
-    "@deepseek-ai/dsh-invariants": ">=0.1.0-rc.8"
+    "@deepseek-ai/dsh-attachment": ">=0.1.1-rc.2",
+    "@deepseek-ai/dsh-invariants": ">=0.1.1-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-invariants": {
@@ -77,13 +77,15 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.699.0",
+    "@deepseek-ai/dsh-attachment-local": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-home-paths": "0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
     "sharp": "^0.35.3"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-attachment": "0.1.0-rc.8",
-    "@deepseek-ai/dsh-invariants": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-attachment": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-invariants": "0.1.1-rc.2",
     "@types/node": "^22.20.0",
     "@vitest/coverage-v8": "^4.1.11",
     "typescript": "^5.9.2",

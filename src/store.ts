@@ -6,14 +6,16 @@
  */
 
 import { createHash } from 'node:crypto'
-import { AttachmentError, AttachmentId } from '@deepseek-ai/dsh-attachment'
+import { AttachmentError } from '@deepseek-ai/dsh-attachment'
 import type {
   ImageAttachmentLimits,
   ImageAttachmentRef,
   SaveImageAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
-import { detectImage, probeImage } from './image.ts'
+import { prepareImageFile, validateImageFile } from '@deepseek-ai/dsh-attachment-local'
+import type { NormalizationPolicy } from '@deepseek-ai/dsh-attachment-local'
+import { probeImage } from './image.ts'
 import type { ObjectClient, ObjectHead } from './client.ts'
 
 const ID_PATTERN = /^sha256:([a-f0-9]{64})$/
@@ -24,16 +26,6 @@ function digest(data: Uint8Array): string {
 
 function base64Digest(sha256Hex: string): string {
   return Buffer.from(sha256Hex, 'hex').toString('base64')
-}
-
-function displayName(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined
-  // Strip both separator styles by hand: a POSIX host treats `\` as an
-  // ordinary character, so path.basename would keep a Windows client's full
-  // local path and leak it into the reference and the session log.
-  const leaf = value.slice(Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\')) + 1)
-  const clean = leaf.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 255)
-  return clean === '' ? undefined : clean
 }
 
 /**
@@ -52,28 +44,19 @@ function ensureReference(ref: ImageAttachmentRef): string {
   return match[1]
 }
 
-async function inspectMetadata(
-  data: Uint8Array,
-  declaredMediaType: ImageAttachmentRef['mediaType'],
-  limits: Pick<ImageAttachmentLimits, 'maxImagePixels' | 'maxImageDimension'>,
-): Promise<Omit<ImageAttachmentRef, 'attachmentId' | 'name'>> {
-  if (data.byteLength === 0) throw new AttachmentError('Image is empty.', 'INVALID_IMAGE')
-  const detected = await detectImage(data, { maxPixels: limits.maxImagePixels, maxDimension: limits.maxImageDimension })
-  if (detected.mediaType !== declaredMediaType) throw new AttachmentError('Declared image type does not match its bytes.', 'IMAGE_TYPE_MISMATCH')
-  return { ...detected, bytes: data.byteLength }
-}
-
 /**
  * Run the full admission policy for one image without touching storage.
  * @param input - encoded bytes and declared metadata.
- * @param limits - resolved storage policy.
+ * @param limits - resolved admission policy.
+ * @param normalization - resolved stored-image normalization policy.
  * @returns completion after the encoded raster has been fully decoded.
  */
-export async function validateImageObject(input: SaveImageAttachment, limits: ImageAttachmentLimits): Promise<void> {
-  if (input.data.byteLength > limits.maxImageBytes) {
-    throw new AttachmentError('Image exceeds the configured byte limit.', 'IMAGE_TOO_LARGE')
-  }
-  await inspectMetadata(input.data, input.mediaType, limits)
+export async function validateImageObject(
+  input: SaveImageAttachment,
+  limits: ImageAttachmentLimits,
+  normalization: NormalizationPolicy,
+): Promise<void> {
+  await validateImageFile(input, limits, normalization)
 }
 
 /**
@@ -126,7 +109,8 @@ async function verifyExisting(
  * @param client - object-store port.
  * @param prefix - configured key prefix.
  * @param input - encoded bytes and declared metadata.
- * @param limits - resolved storage policy.
+ * @param limits - resolved admission policy.
+ * @param normalization - resolved stored-image normalization policy.
  * @param signal - optional cancellation for upload work.
  * @returns the durable content-addressed reference.
  */
@@ -135,22 +119,25 @@ export async function saveImageObject(
   prefix: string,
   input: SaveImageAttachment,
   limits: ImageAttachmentLimits,
+  normalization: NormalizationPolicy,
   signal?: AbortSignal,
 ): Promise<ImageAttachmentRef> {
-  if (input.data.byteLength > limits.maxImageBytes) throw new AttachmentError('Image exceeds the configured byte limit.', 'IMAGE_TOO_LARGE')
-  const metadata = await inspectMetadata(input.data, input.mediaType, limits)
-  const sha256 = digest(input.data)
+  // Admission, normalization, naming, and the content address all come from
+  // the shared helper, so an image admitted here is exactly the image the
+  // in-box backend would admit and store. What is left is the commit.
+  const prepared = await prepareImageFile(input, limits, normalization)
+  const sha256 = String(prepared.ref.attachmentId).slice('sha256:'.length)
   const checksum = base64Digest(sha256)
   const key = objectKey(prefix, sha256)
   try {
     const outcome = await client.put({
       key,
-      data: input.data,
-      mediaType: input.mediaType,
+      data: prepared.data,
+      mediaType: prepared.ref.mediaType,
       checksumSha256: checksum,
       metadata: {
-        width: String(metadata.width),
-        height: String(metadata.height),
+        width: String(prepared.ref.width),
+        height: String(prepared.ref.height),
       },
     }, signal)
     if (outcome === 'exists') {
@@ -162,18 +149,13 @@ export async function saveImageObject(
         // one would hand the session log a dangling attachment.
         throw new AttachmentError('Attachment object is missing.', 'ATTACHMENT_NOT_FOUND')
       }
-      await verifyExisting(client, key, head, input.data, checksum, signal)
+      await verifyExisting(client, key, head, prepared.data, checksum, signal)
     }
   } catch (error) {
     if (error instanceof AttachmentError) throw error
     throw new AttachmentError('Unable to persist image attachment.', 'ATTACHMENT_WRITE_FAILED', { cause: error })
   }
-  const name = displayName(input.name)
-  return {
-    attachmentId: AttachmentId(`sha256:${sha256}`),
-    ...metadata,
-    ...(name !== undefined ? { name } : {}),
-  }
+  return prepared.ref
 }
 
 /**

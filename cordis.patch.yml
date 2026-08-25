@@ -35,3 +35,4 @@
         accessKeyIdRef: !!js process.env.DSH_ATTACHMENT_S3_ACCESS_KEY_ID_REF
         secretAccessKeyRef: !!js process.env.DSH_ATTACHMENT_S3_SECRET_ACCESS_KEY_REF
         sessionTokenRef: !!js process.env.DSH_ATTACHMENT_S3_SESSION_TOKEN_REF
+        variantCacheDir: !!js process.env.DSH_ATTACHMENT_S3_VARIANT_CACHE_DIR

@@ -5,6 +5,7 @@
  * @module @guaguasong/dsh-attachment-s3
  */
 
+import { join, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AttachmentStore } from '@deepseek-ai/dsh-attachment'
@@ -12,25 +13,42 @@ import type {
   ImageAttachmentLimits,
   ImageAttachmentRef,
   ImageMediaType,
+  ImageRequestPolicy,
+  RequestImageAttachment,
   SaveImageAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
+import {
+  DEFAULT_MAX_IMAGE_BYTES,
+  DEFAULT_MAX_IMAGE_DIMENSION,
+  DEFAULT_MAX_IMAGE_PIXELS,
+  DEFAULT_MAX_IMAGES_PER_MESSAGE,
+  DEFAULT_MAX_MESSAGE_IMAGE_BYTES,
+  DEFAULT_NORMALIZED_IMAGE_MAX_BYTES,
+  DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION,
+  readRequestImageFile,
+} from '@deepseek-ai/dsh-attachment-local'
+import type { NormalizationPolicy } from '@deepseek-ai/dsh-attachment-local'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { createS3ObjectClient } from './client.ts'
 import type { ObjectClient, ResolvedS3Credentials, S3ObjectClientOptions } from './client.ts'
 import { readImageObject, saveImageObject, validateImageObject } from './store.ts'
 
 /** Default key prefix; the version segment fences a future incompatible layout off from stored objects. */
 export const DEFAULT_PREFIX = 'attachments/v1'
-/** Default maximum encoded bytes for one image. */
-export const DEFAULT_MAX_IMAGE_BYTES = 5 * 1024 * 1024
-/** Default maximum images in one prompt. */
-export const DEFAULT_MAX_IMAGES_PER_MESSAGE = 20
-/** Default maximum aggregate image bytes in one prompt. */
-export const DEFAULT_MAX_MESSAGE_IMAGE_BYTES = 100 * 1024 * 1024
-/** Default maximum intrinsic pixels for one image. */
-export const DEFAULT_MAX_IMAGE_PIXELS = 40_000_000
-/** Default maximum intrinsic width and height, per side, for one image. */
-export const DEFAULT_MAX_IMAGE_DIMENSION = 2000
+
+// Admission and normalization defaults are re-exported from the in-box local
+// backend rather than restated, so the two backends cannot drift apart on
+// which images they accept or how they normalize what they store.
+export {
+  DEFAULT_MAX_IMAGE_BYTES,
+  DEFAULT_MAX_IMAGE_DIMENSION,
+  DEFAULT_MAX_IMAGE_PIXELS,
+  DEFAULT_MAX_IMAGES_PER_MESSAGE,
+  DEFAULT_MAX_MESSAGE_IMAGE_BYTES,
+  DEFAULT_NORMALIZED_IMAGE_MAX_BYTES,
+  DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION,
+} from '@deepseek-ai/dsh-attachment-local'
 
 const MEDIA_TYPES: readonly ImageMediaType[] = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 /** Same POSIX shell identifier the harness credential seam accepts as a reference. */
@@ -73,6 +91,17 @@ export interface Config {
   maxImagePixels?: number
   /** Maximum intrinsic width and maximum intrinsic height, applied per side, for one image. */
   maxImageDimension?: number
+  /** Long-edge target of the stored normalized image; a larger admitted image is downscaled to it. */
+  normalizedImageMaxDimension?: number
+  /** Byte budget of the stored normalized image. */
+  normalizedImageMaxBytes?: number
+  /**
+   * Directory holding derived request images. They are recomputed from the
+   * stored object whenever they are missing, so this is a cache and not
+   * storage: it stays local rather than occupying the bucket. Omitted resolves
+   * below the Harness home.
+   */
+  variantCacheDir?: string
 }
 
 /**
@@ -127,6 +156,9 @@ export class S3AttachmentStore extends AttachmentStore {
     maxMessageImageBytes: z.number().step(1).min(1).default(DEFAULT_MAX_MESSAGE_IMAGE_BYTES),
     maxImagePixels: z.number().step(1).min(1).default(DEFAULT_MAX_IMAGE_PIXELS),
     maxImageDimension: z.number().step(1).min(1).default(DEFAULT_MAX_IMAGE_DIMENSION),
+    normalizedImageMaxDimension: z.number().step(1).min(1).default(DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION),
+    normalizedImageMaxBytes: z.number().step(1).min(1).default(DEFAULT_NORMALIZED_IMAGE_MAX_BYTES),
+    variantCacheDir: z.string(),
   })
 
   /** Bucket every object of this store lives in. */
@@ -134,6 +166,10 @@ export class S3AttachmentStore extends AttachmentStore {
   /** Key prefix owning this deployment's objects, without a trailing slash. */
   readonly prefix: string
   readonly imageLimits: ImageAttachmentLimits
+  /** Normalization applied to what this store keeps, shared with the in-box backend's policy shape. */
+  readonly normalizationPolicy: Readonly<NormalizationPolicy>
+  /** Absolute directory holding derived request images. */
+  readonly variantCacheDir: string
 
   /**
    * The object-store port this service runs on. A plain private property, not
@@ -155,6 +191,13 @@ export class S3AttachmentStore extends AttachmentStore {
       maxImageDimension: config.maxImageDimension ?? DEFAULT_MAX_IMAGE_DIMENSION,
       mediaTypes: Object.freeze([...MEDIA_TYPES]),
     })
+    this.normalizationPolicy = Object.freeze({
+      maxDimension: config.normalizedImageMaxDimension ?? DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION,
+      maxBytes: config.normalizedImageMaxBytes ?? DEFAULT_NORMALIZED_IMAGE_MAX_BYTES,
+    })
+    this.variantCacheDir = config.variantCacheDir === undefined
+      ? resolve(join(resolveDshHome(), 'attachments', 's3-request-images'))
+      : resolve(config.variantCacheDir)
     this.client = createS3ObjectClient(resolveClientOptions(ctx, config))
     ctx.effect(() => () => {
       this.client.close()
@@ -162,15 +205,40 @@ export class S3AttachmentStore extends AttachmentStore {
   }
 
   async validateImage(input: SaveImageAttachment): Promise<void> {
-    await validateImageObject(input, this.imageLimits)
+    await validateImageObject(input, this.imageLimits, this.normalizationPolicy)
   }
 
   async saveImage(input: SaveImageAttachment): Promise<ImageAttachmentRef> {
-    return saveImageObject(this.client, this.prefix, input, this.imageLimits)
+    return saveImageObject(this.client, this.prefix, input, this.imageLimits, this.normalizationPolicy)
   }
 
   async readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment> {
     return readImageObject(this.client, this.prefix, ref, signal)
+  }
+
+  /**
+   * Derive the version of one image that a model request carries, bounded by
+   * the caller's policy.
+   *
+   * The bytes come from the bucket; the encoder decisions — target dimensions,
+   * format and quality search, alpha and colour handling, and the variant id
+   * consumers cache by — are the in-box backend's, so both backends put the
+   * same picture in front of a model. Derived versions are cached under
+   * {@link S3AttachmentStore.variantCacheDir}: they are reproducible from the
+   * stored object, so they belong beside the process that needs them rather
+   * than in the bucket.
+   * @param ref - durable reference from the session log.
+   * @param policy - the request's pixel and byte budget.
+   * @param signal - optional cancellation for transfer and encoding work.
+   * @returns the request version and the variant id identifying it.
+   */
+  override async readImageRequest(
+    ref: ImageAttachmentRef,
+    policy: ImageRequestPolicy,
+    signal?: AbortSignal,
+  ): Promise<RequestImageAttachment> {
+    const stored = await this.readImage(ref, signal)
+    return readRequestImageFile(this.variantCacheDir, stored, policy, signal)
   }
 }
 

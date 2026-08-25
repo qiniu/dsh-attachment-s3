@@ -1,3 +1,8 @@
+import { rmSync } from 'node:fs'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import sharp from 'sharp'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Config } from '../src/index.ts'
@@ -59,7 +64,8 @@ function storeAt(endpoint: string, config: Partial<Config> = {}): S3AttachmentSt
 describe('S3 attachment service', () => {
   it('resolves every omitted admission limit and the key prefix explicitly', () => {
     const service = new S3AttachmentStore(new Context(), { ...BUCKET })
-    expect(DEFAULT_MAX_IMAGE_BYTES).toBe(5 * 1024 * 1024)
+    // The admission defaults are the in-box backend's, not this package's own.
+    expect(DEFAULT_MAX_IMAGE_BYTES).toBe(20 * 1024 * 1024)
     expect(service.bucket).toBe('dsh-attachments')
     expect(service.prefix).toBe(DEFAULT_PREFIX)
     expect(service.imageLimits).toEqual({
@@ -163,7 +169,9 @@ describe('S3 attachment service', () => {
     })
 
     const [ref] = await ctx.attachments.saveImages([{ data: PNG, mediaType: 'image/png', name: 'shot.png' }])
-    expect(ref).toMatchObject({ mediaType: 'image/png', bytes: PNG.byteLength, width: 1, height: 1, name: 'shot.png' })
+    // Admission normalizes before storing, so the reference describes the
+    // stored image rather than the submitted bytes.
+    expect(ref).toMatchObject({ mediaType: 'image/png', width: 1, height: 1, name: 'shot.png' })
     expect(objects.size).toBe(1)
     expect([...objects.keys()][0]).toMatch(/^attachments\/v1\/objects\/[0-9a-f]{2}\/[0-9a-f]{64}$/)
 
@@ -171,7 +179,9 @@ describe('S3 attachment service', () => {
     expect(again.attachmentId).toBe(ref!.attachmentId)
     expect(objects.size).toBe(1)
 
-    await expect(ctx.attachments.readImage(ref!)).resolves.toEqual({ ref, data: PNG })
+    const read = await ctx.attachments.readImage(ref!)
+    expect(read.ref).toEqual(ref)
+    expect(read.data.byteLength).toBe(ref!.bytes)
     await expect(ctx.attachments.validateImage({ data: PNG, mediaType: 'image/png' })).resolves.toBeUndefined()
   })
 
@@ -229,5 +239,41 @@ describe('S3 attachment service', () => {
     await expect(service.validateImage({ data: PNG, mediaType: 'image/png' })).resolves.toBeUndefined()
     await expect(service.validateImage({ data: Uint8Array.of(1, 2, 3), mediaType: 'image/png' }))
       .rejects.toMatchObject({ code: 'INVALID_IMAGE' })
+  })
+})
+
+describe('model-request images', () => {
+  it('derives a request version from the stored object and bounds it by the policy', async () => {
+    const { endpoint } = await service()
+    const cache = await mkdtemp(join(tmpdir(), 'dsh-s3-variants-'))
+    restore.push(() => void rmSync(cache, { recursive: true, force: true }))
+    withEnv('DSH_S3_TEST_KEY_ID', 'test-key')
+    withEnv('DSH_S3_TEST_SECRET', 'test-secret')
+    const store = storeAt(endpoint, {
+      variantCacheDir: cache,
+      accessKeyIdRef: 'DSH_S3_TEST_KEY_ID',
+      secretAccessKeyRef: 'DSH_S3_TEST_SECRET',
+    })
+    // A source far past the request budget, so the derivation has to do work.
+    const wide = new Uint8Array(await sharp({ create: { width: 900, height: 600, channels: 3, background: { r: 30, g: 90, b: 140 } } }).png().toBuffer())
+    const ref = await store.saveImage({ data: wide, mediaType: 'image/png' })
+
+    const policy = { maxPixels: 60_000, maxBytes: 200_000 }
+    const request = await store.readImageRequest(ref, policy)
+
+    expect(request.attachment).toEqual(ref)
+    expect(request.width * request.height).toBeLessThanOrEqual(policy.maxPixels)
+    expect(request.bytes).toBeLessThanOrEqual(policy.maxBytes)
+    expect(request.bytes).toBe(request.data.byteLength)
+    expect(request.depth).toBe('uchar')
+    expect(String(request.variantId)).toMatch(/^sha256:[0-9a-f]{64}$/)
+
+    // The variant id is a cache key: the same reference and policy must name
+    // the same version, and a different budget must not reuse it.
+    const again = await store.readImageRequest(ref, policy)
+    expect(again.variantId).toBe(request.variantId)
+    const tighter = await store.readImageRequest(ref, { maxPixels: 10_000, maxBytes: 200_000 })
+    expect(tighter.variantId).not.toBe(request.variantId)
+    expect(tighter.width * tighter.height).toBeLessThanOrEqual(10_000)
   })
 })

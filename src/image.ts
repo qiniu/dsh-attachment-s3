@@ -1,12 +1,11 @@
 /**
- * Raster inspection for the S3 attachment backend: full decode at admission,
- * header-only probe on digest-verified reads.
+ * Header-only raster inspection for the read path.
  *
- * Deliberately owns this logic instead of importing it from
- * `@deepseek-ai/dsh-attachment-local`: a provider must not depend on another
- * provider, and the two backends must be able to move their admission policies
- * independently. The decoded-metadata semantics stay identical so an image
- * admitted by one backend is admitted by the other.
+ * Admission and request-image derivation are delegated to the in-box local
+ * backend's exported helpers, which own the encoder policy every deployment
+ * must agree on. What stays here is the one thing those helpers do not expose:
+ * re-deriving a stored image's header to check it against the reference the
+ * session log recorded.
  *
  * @module @guaguasong/dsh-attachment-s3/image
  */
@@ -49,38 +48,6 @@ async function imageMetadata(image: Sharp): Promise<DetectedImage> {
 export async function probeImage(data: Uint8Array): Promise<DetectedImage> {
   try {
     return await imageMetadata(sharp(data, { failOn: 'error', limitInputPixels: false }))
-  } catch (error) {
-    if (error instanceof AttachmentError) throw error
-    throw new AttachmentError('Unsupported or malformed image data.', 'INVALID_IMAGE', { cause: error })
-  }
-}
-
-/** Admission limits applied to a decoded raster's intrinsic dimensions. */
-export interface DecodedImageLimits {
-  /** Decoded-pixel (width times height) admission limit. */
-  maxPixels?: number
-  /** Per-side admission limit applied to width and height independently. */
-  maxDimension?: number
-}
-
-/**
- * Fully decode a supported raster and return its intrinsic metadata.
- * @param data - complete encoded image bytes.
- * @param limits - intrinsic-dimension admission limits.
- * @returns verified format and dimensions.
- */
-export async function detectImage(data: Uint8Array, limits?: DecodedImageLimits): Promise<DetectedImage> {
-  try {
-    const image = sharp(data, { failOn: 'error', limitInputPixels: false })
-    const detected = await imageMetadata(image)
-    if (limits?.maxPixels !== undefined && detected.width * detected.height > limits.maxPixels) {
-      throw new AttachmentError('Image exceeds the configured decoded-pixel limit.', 'IMAGE_TOO_MANY_PIXELS')
-    }
-    if (limits?.maxDimension !== undefined && Math.max(detected.width, detected.height) > limits.maxDimension) {
-      throw new AttachmentError('Image exceeds the configured per-side pixel limit.', 'IMAGE_DIMENSION_TOO_LARGE')
-    }
-    await image.raw().toBuffer()
-    return detected
   } catch (error) {
     if (error instanceof AttachmentError) throw error
     throw new AttachmentError('Unsupported or malformed image data.', 'INVALID_IMAGE', { cause: error })
