@@ -7,7 +7,7 @@
  * re-deriving a stored image's header to check it against the reference the
  * session log recorded.
  *
- * @module @guaguasong/dsh-attachment-s3/image
+ * @module @qiniu/dsh-attachment-s3/image
  */
 
 import sharp, { type Sharp } from 'sharp'

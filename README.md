@@ -1,4 +1,4 @@
-# @guaguasong/dsh-attachment-s3
+# @qiniu/dsh-attachment-s3
 
 English | [中文](README.zh.md)
 
@@ -9,7 +9,7 @@ Nothing about the bucket is model-visible: the durable reference stays the opaqu
 ## Install
 
 ```sh
-dsh plugin --profile <name> add @guaguasong/dsh-attachment-s3
+dsh plugin --profile <name> add @qiniu/dsh-attachment-s3
 export DSH_ATTACHMENT_S3_BUCKET=my-attachments
 export DSH_ATTACHMENT_S3_REGION=us-east-1
 dsh --profile <name>
@@ -21,7 +21,7 @@ The package declares `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`, s
 dsh --profile <name> --dump-config | grep -A2 'id: attachment'
 ```
 
-`dsh plugin --profile <name> remove @guaguasong/dsh-attachment-s3` reverses the install and restores the local backend.
+`dsh plugin --profile <name> remove @qiniu/dsh-attachment-s3` reverses the install and restores the local backend.
 
 ### Environment
 
@@ -43,7 +43,7 @@ To pin configuration instead of reading the environment, restate the row in `$DS
 
 ```yaml
 - id: attachment-s3
-  name: '@guaguasong/dsh-attachment-s3'
+  name: '@qiniu/dsh-attachment-s3'
   config:
     bucket: my-attachments
     region: us-east-1

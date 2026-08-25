@@ -1,5 +1,5 @@
 {
-  "name": "@guaguasong/dsh-attachment-s3",
+  "name": "@qiniu/dsh-attachment-s3",
   "description": "Content-addressed S3 attachment storage for the DeepSeek Harness attachment seam",
   "version": "0.2.0",
   "type": "module",
@@ -14,12 +14,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/guaguasong/dsh-attachment-s3.git"
+    "url": "git+https://github.com/qiniu/dsh-attachment-s3.git"
   },
   "bugs": {
-    "url": "https://github.com/guaguasong/dsh-attachment-s3/issues"
+    "url": "https://github.com/qiniu/dsh-attachment-s3/issues"
   },
-  "homepage": "https://github.com/guaguasong/dsh-attachment-s3#readme",
+  "homepage": "https://github.com/qiniu/dsh-attachment-s3#readme",
   "publishConfig": {
     "access": "public"
   },

@@ -25,7 +25,7 @@
 
 - insert:
     - id: attachment-s3
-      name: '@guaguasong/dsh-attachment-s3'
+      name: '@qiniu/dsh-attachment-s3'
       config:
         bucket: !!js process.env.DSH_ATTACHMENT_S3_BUCKET
         region: !!js process.env.DSH_ATTACHMENT_S3_REGION
