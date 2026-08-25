@@ -84,20 +84,20 @@ bundle patch 在挂载时从环境读取配置。`DSH_` 前缀的名字必须来
 
 进 bucket 的是**归一化之后**的图片，而不是提交的原始字节：准入会把过大的源缩到入库长边并按字节预算重编码，引用里记下原始尺寸。送进模型请求的那一版则按需从入库对象派生、缓存在本地——它可复现，不该占 bucket。
 
-- **一次写入。** 上传是条件写（`If-None-Match: *`），并发写入相同字节的写者不会互相覆盖。竞争失败的一方不重传，而是校验已存在的对象：有校验和就比校验和，不搬字节；没有就把对象读回来比对——否则等长替换会让这次保存发布一个之后永远读不出来的引用。
+- **去重靠内容寻址。** 键就是待写字节的 SHA-256，所以撞键时重写进去的正是已经在那里的字节，而发布出去的引用描述的正是这次调用自己写入的内容。两个写者写同一张图收敛到同一个对象，重复的只是上传。每次上传都带 `x-amz-checksum-sha256`，会校验它的服务能拒收传输中损坏的字节。
 - **读取即校验。** 读取只请求引用声明的字节范围，回来后重算摘要并重解析图片头，因此 bucket 侧的替换以 `ATTACHMENT_CORRUPT` 暴露，不会进入模型请求。
 - **失败码。** 准入保留 seam 中调用方可纠正的码（`IMAGE_TOO_LARGE`、`IMAGE_TYPE_MISMATCH`、`IMAGE_TOO_MANY_PIXELS`、`IMAGE_DIMENSION_TOO_LARGE`、`INVALID_IMAGE`）；存储失败为 `ATTACHMENT_WRITE_FAILED`、`ATTACHMENT_READ_FAILED`、`ATTACHMENT_NOT_FOUND`、`ATTACHMENT_CORRUPT`，各自带上底层 cause。
 
 ## S3 兼容服务
 
-本后端对 bucket 有四项要求：拒绝已占用键的条件写、可发送并读回的对象校验和、range 读取、可区分的「键不存在」。AWS S3 四项齐全，其他服务各有差异。接入前先探测：
+本后端对 bucket 有三项要求：接受 SHA-256 校验和头的上传、range 读取、可区分的「键不存在」。接入前先探测：
 
 ```sh
 PROBE_ENDPOINT=https://s3.example.com PROBE_REGION=us-east-1 PROBE_BUCKET=<bucket> \
 AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... pnpm run probe
 ```
 
-它写入并删除一个小对象，报告该服务在每项行为上的表现。**忽略**条件写的服务仍然可用：键就是字节的摘要，覆盖写入的正是已经在那里的字节，而且发布引用的正是写入它的那一方——存储依然去重，重复的只是上传。**拒绝**条件写或校验和头的服务，本后端按现状跑不了。
+它写入并删除两个小对象，报告该服务在每项行为上的表现，包括错误的校验和到底是被拒绝还是被照单全收。拒绝校验和头的服务，本后端按现状跑不了。
 
 ## 开发
 
@@ -109,7 +109,7 @@ pnpm run build
 pnpm run test:e2e  # 真实 bucket；没有 DSH_S3_E2E_BUCKET 时自动跳过
 ```
 
-`pnpm run test` 不需要 bucket 也不需要联网：`tests/support/fake-s3.ts` 直接应答 SDK 真正发出的 S3 请求，签名、条件写、range 读取和状态码分类都是真实走过的。e2e 读取 `DSH_S3_E2E_BUCKET`，可选 `DSH_S3_E2E_REGION`、`DSH_S3_E2E_ENDPOINT`、`DSH_S3_E2E_FORCE_PATH_STYLE`、`DSH_S3_E2E_PREFIX`；它写在每次运行随机生成的前缀下，并删除自己写入的对象。
+`pnpm run test` 不需要 bucket 也不需要联网：`tests/support/fake-s3.ts` 直接应答 SDK 真正发出的 S3 请求，签名、校验和头、range 读取和状态码分类都是真实走过的。e2e 读取 `DSH_S3_E2E_BUCKET`，可选 `DSH_S3_E2E_REGION`、`DSH_S3_E2E_ENDPOINT`、`DSH_S3_E2E_FORCE_PATH_STYLE`、`DSH_S3_E2E_PREFIX`；它写在每次运行随机生成的前缀下，并删除自己写入的对象。
 
 发布时 `prepublishOnly` 会先跑：clean、typecheck、全套测试、build。
 

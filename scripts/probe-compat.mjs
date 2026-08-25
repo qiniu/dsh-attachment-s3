@@ -1,10 +1,10 @@
 /**
  * Probe one S3-compatible service for the behaviors this backend relies on.
  *
- * The store needs four things from a bucket: a conditional write that refuses a
- * taken key, an object checksum it can send and read back, ranged reads, and a
- * distinguishable "no such key". Services differ on the first two, so run this
- * before pointing a deployment at a new provider.
+ * The store needs three things from a bucket: an upload that accepts a SHA-256
+ * checksum header, ranged reads, and a distinguishable "no such key". Services
+ * differ on the first, so run this before pointing a deployment at a new
+ * provider.
  *
  * Usage:
  *   PROBE_ENDPOINT=https://s3.example.com \
@@ -21,7 +21,6 @@ import { createHash, randomBytes } from 'node:crypto'
 import {
   DeleteObjectCommand,
   GetObjectCommand,
-  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
@@ -103,13 +102,6 @@ if (!sha256Put.ok) {
   })
 }
 
-const headChecksum = await step('HeadObject returns the stored SHA-256', async () => {
-  const response = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key, ChecksumMode: 'ENABLED' }))
-  if (response.ChecksumSHA256 === undefined) throw new Error('no ChecksumSHA256 in the response')
-  if (response.ChecksumSHA256 !== checksum) throw new Error('stored checksum does not match what was sent')
-  return 'matches'
-})
-
 const checksumEnforced = await step('PutObject with a WRONG checksum is rejected', async () => {
   const wrong = createHash('sha256').update(randomBytes(32)).digest('base64')
   try {
@@ -128,23 +120,6 @@ const checksumEnforced = await step('PutObject with a WRONG checksum is rejected
   }
 })
 const checksumVerified = checksumEnforced.ok && checksumEnforced.detail.startsWith('enforced')
-
-const conditional = await step('PutObject with If-None-Match: * refuses a taken key', async () => {
-  try {
-    await client.send(new PutObjectCommand({
-      Bucket: bucket, Key: key, Body: randomBytes(64), ContentType: 'image/png', IfNoneMatch: '*',
-    }))
-    // The service accepted a write to a key that already exists, so it did not
-    // evaluate the condition at all.
-    return 'IGNORED — the taken key was overwritten'
-  } catch (error) {
-    const status = error?.$metadata?.httpStatusCode
-    if (error?.name === 'PreconditionFailed' || status === 412) return 'honored (412 PreconditionFailed)'
-    throw error
-  }
-})
-const conditionalHonored = conditional.ok && conditional.detail.startsWith('honored')
-const conditionalIgnored = conditional.ok && !conditionalHonored
 
 await step('Ranged GET returns exactly the requested bytes', async () => {
   const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key, Range: `bytes=0-${body.byteLength}` }))
@@ -177,24 +152,10 @@ console.log('\nverdict')
 if (!sha256Put.ok) {
   console.log('  This service rejects the SHA-256 checksum header. The backend cannot run against it')
   console.log('  until it gains a checksum-free mode — report the FAIL line above.')
-} else if (!headChecksum.ok) {
-  console.log('  Checksums are accepted but not reported back. Supported: dedup verification falls back')
-  console.log('  to reading the stored object and comparing it byte for byte (one extra GET, only when a save')
-  console.log('  finds its key already taken).')
-} else {
-  console.log('  Checksums fully supported: dedup verification costs one HeadObject and moves no bytes.')
-}
-if (sha256Put.ok && !checksumVerified) {
+} else if (!checksumVerified) {
   console.log('  The checksum header is accepted but NOT verified: transfer integrity rests on TLS and on')
   console.log('  the read path re-hashing every object before it returns.')
-}
-if (conditionalHonored) {
-  console.log('  Conditional writes honored: concurrent writers of the same key never overwrite each other.')
-} else if (conditionalIgnored) {
-  console.log('  Conditional writes IGNORED: a duplicate save re-uploads and overwrites. Harmless for')
-  console.log('  content-addressed keys (identical bytes), but the dedup path never triggers.')
 } else {
-  console.log('  Conditional writes REJECTED: every save would fail. The backend needs the condition')
-  console.log('  made optional before it can run here — report the FAIL line above.')
+  console.log('  Checksums accepted and verified on upload.')
 }
 process.exit(results.some(result => !result.ok && result.name === 'cleanup') ? 1 : 0)

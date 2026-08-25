@@ -84,20 +84,20 @@ One immutable object per distinct image, `Content-Type` set to the verified medi
 
 What lands in the bucket is the **normalized** image, not the submitted bytes: admission downscales a large source to the stored long edge and re-encodes it under a byte budget, and the reference records the original dimensions. The version a model request carries is derived from the stored object on demand and cached locally, since it is reproducible and does not belong in the bucket.
 
-- **Write-once.** Uploads are conditional (`If-None-Match: *`), so concurrent writers of identical bytes never overwrite each other. The writer that loses the race verifies what is already stored instead of republishing it: the recorded checksum settles it without moving bytes, and an object stored without one is read back and compared, because a same-length substitution would otherwise publish a reference no later read can return.
+- **Content addressing does the deduplicating.** The key is the SHA-256 of the bytes being written, so a save that finds the key taken rewrites exactly what is already there, and the reference it publishes describes bytes that same call wrote. Two writers of one image converge on one object; only the upload repeats. Every upload also sends `x-amz-checksum-sha256`, so a service that verifies it rejects bytes that arrived damaged.
 - **Verified reads.** A read requests exactly the byte range the reference claims, re-hashes the bytes, and re-derives the image header before returning, so a bucket-side substitution surfaces as `ATTACHMENT_CORRUPT` instead of reaching a model request.
 - **Failure codes.** Admission keeps the seam's caller-correctable codes (`IMAGE_TOO_LARGE`, `IMAGE_TYPE_MISMATCH`, `IMAGE_TOO_MANY_PIXELS`, `IMAGE_DIMENSION_TOO_LARGE`, `INVALID_IMAGE`); storage failures surface as `ATTACHMENT_WRITE_FAILED`, `ATTACHMENT_READ_FAILED`, `ATTACHMENT_NOT_FOUND`, or `ATTACHMENT_CORRUPT`, each carrying its cause.
 
 ## S3-compatible services
 
-The backend needs four things from a bucket: a conditional write that refuses a taken key, an object checksum it can send and read back, ranged reads, and a distinguishable "no such key". AWS S3 provides all four; other services vary. Probe one before pointing a deployment at it:
+The backend needs three things from a bucket: an upload that accepts a SHA-256 checksum header, ranged reads, and a distinguishable "no such key". Probe a service before pointing a deployment at it:
 
 ```sh
 PROBE_ENDPOINT=https://s3.example.com PROBE_REGION=us-east-1 PROBE_BUCKET=<bucket> \
 AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... pnpm run probe
 ```
 
-It writes and deletes one small object and reports what the service does with each behavior. A service that **ignores** the conditional write still works: the key is the digest of the bytes, so an overwrite writes exactly what is already there, and the writer publishing the reference is the one that wrote it — storage still deduplicates, only the upload repeats. A service that **rejects** the conditional write or the checksum header cannot run this backend as it stands.
+It writes and deletes two small objects and reports what the service does with each behavior, including whether a wrong checksum is actually rejected or merely accepted. A service that rejects the checksum header cannot run this backend as it stands.
 
 ## Development
 
@@ -109,7 +109,7 @@ pnpm run build
 pnpm run test:e2e  # real bucket; self-skips without DSH_S3_E2E_BUCKET
 ```
 
-`pnpm run test` needs no bucket and no network: `tests/support/fake-s3.ts` serves the S3 requests the SDK actually sends, so signing, conditional writes, range reads, and status classification are exercised for real. The e2e suite reads `DSH_S3_E2E_BUCKET` and optionally `DSH_S3_E2E_REGION`, `DSH_S3_E2E_ENDPOINT`, `DSH_S3_E2E_FORCE_PATH_STYLE`, and `DSH_S3_E2E_PREFIX`; it writes under a random per-run prefix and deletes what it wrote.
+`pnpm run test` needs no bucket and no network: `tests/support/fake-s3.ts` serves the S3 requests the SDK actually sends, so signing, checksum headers, range reads, and status classification are exercised for real. The e2e suite reads `DSH_S3_E2E_BUCKET` and optionally `DSH_S3_E2E_REGION`, `DSH_S3_E2E_ENDPOINT`, `DSH_S3_E2E_FORCE_PATH_STYLE`, and `DSH_S3_E2E_PREFIX`; it writes under a random per-run prefix and deletes what it wrote.
 
 Publishing runs `prepublishOnly` first: clean, typecheck, the full suite, then build.
 

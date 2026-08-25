@@ -12,7 +12,6 @@ import { MemoryObjectClient, PNG } from './support/memory-client.ts'
 /** Bound delegation to one memory client, so a spec can replace exactly one operation. */
 function delegate(client: MemoryObjectClient): ObjectClient {
   return {
-    head: (key, signal) => client.head(key, signal),
     put: (input, signal) => client.put(input, signal),
     get: (key, options) => client.get(key, options),
     close: () => client.close(),
@@ -77,66 +76,17 @@ describe('saveImageObject', () => {
     expect(client.objects.get(STORED_KEY)?.data).toEqual(STORED)
   })
 
-  it('deduplicates identical bytes onto one object without overwriting it', async () => {
+  it('converges identical bytes onto one object', async () => {
     const client = new MemoryObjectClient()
     const first = await saveImageObject(client, PREFIX, { data: PNG, mediaType: 'image/png' }, LIMITS, NORMALIZATION)
     const second = await saveImageObject(client, PREFIX, { data: PNG, mediaType: 'image/png' }, LIMITS, NORMALIZATION)
 
+    // The content address is what deduplicates: the second save rewrites the
+    // same key with the same bytes, so storage holds one object either way.
     expect(second).toEqual(first)
     expect(client.puts).toEqual([STORED_KEY, STORED_KEY])
     expect(client.objects.size).toBe(1)
-  })
-
-  it('refuses a reference when the occupying object records a different checksum', async () => {
-    const client = new MemoryObjectClient()
-    client.objects.set(STORED_KEY, {
-      data: STORED,
-      mediaType: 'image/png',
-      checksumSha256: Buffer.from('00'.repeat(32), 'hex').toString('base64'),
-      metadata: {},
-    })
-
-    await expect(saveImageObject(client, PREFIX, { data: PNG, mediaType: 'image/png' }, LIMITS, NORMALIZATION))
-      .rejects.toMatchObject({ code: 'ATTACHMENT_CORRUPT' })
-  })
-
-  it('re-reads and compares the occupying object when the store records no checksum', async () => {
-    const client = new MemoryObjectClient({ storeChecksums: false })
-    await saveImageObject(client, PREFIX, { data: PNG, mediaType: 'image/png' }, LIMITS, NORMALIZATION)
-    await expect(saveImageObject(client, PREFIX, { data: PNG, mediaType: 'image/png' }, LIMITS, NORMALIZATION)).resolves.toMatchObject({
-      attachmentId: `sha256:${STORED_SHA256}`,
-    })
-    expect(client.gets).toEqual([STORED_KEY])
-
-    // A substitution of the very same length is what a length check cannot see.
-    client.tamper(STORED_KEY, Uint8Array.from(STORED, (byte, index) => (index === STORED.byteLength - 1 ? byte ^ 0xff : byte)))
-    await expect(saveImageObject(client, PREFIX, { data: PNG, mediaType: 'image/png' }, LIMITS, NORMALIZATION))
-      .rejects.toMatchObject({ code: 'ATTACHMENT_CORRUPT' })
-
-    client.tamper(STORED_KEY, STORED.subarray(0, STORED.byteLength - 1))
-    await expect(saveImageObject(client, PREFIX, { data: PNG, mediaType: 'image/png' }, LIMITS, NORMALIZATION))
-      .rejects.toMatchObject({ code: 'ATTACHMENT_CORRUPT' })
-  })
-
-  it('publishes no reference when a checksumless object vanishes before it can be compared', async () => {
-    const client = new MemoryObjectClient({ storeChecksums: false })
-    client.objects.set(STORED_KEY, { data: STORED, mediaType: 'image/png', metadata: {} })
-    const vanishing: ObjectClient = { ...delegate(client), get: async () => undefined }
-
-    await expect(saveImageObject(vanishing, PREFIX, { data: PNG, mediaType: 'image/png' }, LIMITS, NORMALIZATION))
-      .rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' })
-  })
-
-  it('publishes no reference when the refused key is gone by the time it is verified', async () => {
-    const client = new MemoryObjectClient()
-    client.objects.set(STORED_KEY, { data: STORED, mediaType: 'image/png', metadata: {} })
-    // The upload loses the conditional write, then the object disappears
-    // before verification, exactly as a lifecycle expiry between the two
-    // requests would.
-    const vanishing: ObjectClient = { ...delegate(client), head: async () => undefined }
-
-    await expect(saveImageObject(vanishing, PREFIX, { data: PNG, mediaType: 'image/png' }, LIMITS, NORMALIZATION))
-      .rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' })
+    expect(client.objects.get(STORED_KEY)?.data).toEqual(STORED)
   })
 
   it('rejects an image over the byte limit before contacting the store', async () => {

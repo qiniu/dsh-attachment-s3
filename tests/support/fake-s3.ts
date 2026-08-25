@@ -1,13 +1,12 @@
 /**
  * A minimal S3-compatible service over loopback HTTP: path-style addressing,
- * write-once PUT, ranged GET, and the error codes the client classifies. It
+ * PUT, ranged GET, and the error codes the client classifies. It
  * lets specs exercise the real SDK wiring — signing, headers, status mapping —
  * without a bucket or a network.
  *
  * @module tests/support/fake-s3
  */
 
-import { createHash } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
@@ -38,11 +37,6 @@ export const BUCKET = 'dsh-attachments'
 export interface FakeS3Options {
   /** Bucket name the service answers for. */
   bucket?: string
-  /**
-   * Whether metadata reads report a stored checksum. A service that reports
-   * none stands in for a bucket whose objects predate checksum storage.
-   */
-  checksums?: boolean
 }
 
 /**
@@ -69,11 +63,6 @@ export async function startFakeS3(options: FakeS3Options = {}): Promise<FakeS3> 
       const stored = objects.get(key)
 
       if (request.method === 'PUT') {
-        if (stored !== undefined) {
-          response.writeHead(412, { 'content-type': 'application/xml' })
-          response.end('<Error><Code>PreconditionFailed</Code><Message>At least one of the pre-conditions you specified did not hold</Message></Error>')
-          return
-        }
         objects.set(key, new Uint8Array(Buffer.concat(chunks)))
         response.writeHead(200, { etag: '"stored"' })
         response.end()
@@ -83,17 +72,6 @@ export async function startFakeS3(options: FakeS3Options = {}): Promise<FakeS3> 
       if (stored === undefined) {
         response.writeHead(404, { 'content-type': 'application/xml' })
         response.end('<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>')
-        return
-      }
-
-      if (request.method === 'HEAD') {
-        response.writeHead(200, {
-          'content-length': String(stored.byteLength),
-          ...(options.checksums === false
-            ? {}
-            : { 'x-amz-checksum-sha256': createHash('sha256').update(stored).digest('base64') }),
-        })
-        response.end()
         return
       }
 

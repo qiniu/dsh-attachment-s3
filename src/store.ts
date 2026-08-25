@@ -16,7 +16,7 @@ import type {
 import { prepareImageFile, validateImageFile } from '@deepseek-ai/dsh-attachment-local'
 import type { NormalizationPolicy } from '@deepseek-ai/dsh-attachment-local'
 import { probeImage } from './image.ts'
-import type { ObjectClient, ObjectHead } from './client.ts'
+import type { ObjectClient } from './client.ts'
 
 const ID_PATTERN = /^sha256:([a-f0-9]{64})$/
 
@@ -60,51 +60,15 @@ export async function validateImageObject(
 }
 
 /**
- * Verify that an object already stored under a content-addressed key holds the
- * bytes that key names. The recorded checksum answers this without moving
- * bytes; an object stored without one — written by a tool that sent no SHA-256
- * checksum — is read back and compared, because length alone cannot detect a
- * same-length substitution and a reference published over one would name an
- * attachment no later read can return.
- * @param client - object-store port.
- * @param key - content-addressed key already occupied.
- * @param head - metadata of the object occupying it.
- * @param data - bytes this save admitted.
- * @param checksum - base64 SHA-256 of those bytes.
- * @param signal - optional cancellation for the verification read.
- */
-async function verifyExisting(
-  client: ObjectClient,
-  key: string,
-  head: ObjectHead,
-  data: Uint8Array,
-  checksum: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  if (head.checksumSha256 !== undefined) {
-    if (head.checksumSha256 !== checksum) {
-      throw new AttachmentError('Stored attachment failed integrity verification.', 'ATTACHMENT_CORRUPT')
-    }
-    return
-  }
-  const stored = await client.get(key, {
-    ...(signal !== undefined ? { signal } : {}),
-    maxBytes: data.byteLength,
-  })
-  if (stored === undefined) throw new AttachmentError('Attachment object is missing.', 'ATTACHMENT_NOT_FOUND')
-  if (stored.byteLength !== data.byteLength || !stored.every((byte, index) => byte === data[index])) {
-    throw new AttachmentError('Stored attachment failed integrity verification.', 'ATTACHMENT_CORRUPT')
-  }
-}
-
-/**
  * Admit and durably publish one image under its content address.
  *
- * The upload is conditional, so concurrent writers of identical bytes never
- * overwrite each other and the loser verifies what is already stored instead
- * of republishing it. Publication needs no counterpart to the local backend's
- * directory syncing: once the upload returns, every later reader observes the
- * object.
+ * The upload is unconditional, and content addressing is what makes that safe:
+ * the key is the digest of the bytes being written, so an upload that finds
+ * the key taken writes exactly what is already there, and the reference this
+ * returns describes bytes this call itself wrote. Two writers of the same
+ * image converge on one object; only the upload repeats. Publication needs no
+ * counterpart to the local backend's directory syncing — once the upload
+ * returns, every later reader observes the object.
  *
  * @param client - object-store port.
  * @param prefix - configured key prefix.
@@ -130,7 +94,7 @@ export async function saveImageObject(
   const checksum = base64Digest(sha256)
   const key = objectKey(prefix, sha256)
   try {
-    const outcome = await client.put({
+    await client.put({
       key,
       data: prepared.data,
       mediaType: prepared.ref.mediaType,
@@ -140,17 +104,6 @@ export async function saveImageObject(
         height: String(prepared.ref.height),
       },
     }, signal)
-    if (outcome === 'exists') {
-      const head = await client.head(key, signal)
-      if (head === undefined) {
-        // The conditional write refused the key and the object is gone by the
-        // time we look: another writer's lifecycle rule or a manual delete
-        // raced this save. Nothing durable backs the reference, so publishing
-        // one would hand the session log a dangling attachment.
-        throw new AttachmentError('Attachment object is missing.', 'ATTACHMENT_NOT_FOUND')
-      }
-      await verifyExisting(client, key, head, prepared.data, checksum, signal)
-    }
   } catch (error) {
     if (error instanceof AttachmentError) throw error
     throw new AttachmentError('Unable to persist image attachment.', 'ATTACHMENT_WRITE_FAILED', { cause: error })

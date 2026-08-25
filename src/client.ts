@@ -13,7 +13,6 @@
 
 import {
   GetObjectCommand,
-  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
   type S3ClientConfig,
@@ -45,15 +44,7 @@ export interface S3ObjectClientOptions {
   credentials?: S3CredentialResolver
 }
 
-/** What a stored object's metadata says about its bytes. */
-export interface ObjectHead {
-  /** Stored object length in bytes. */
-  bytes: number
-  /** Base64 SHA-256 the store recorded at upload, absent when the object predates checksum storage. */
-  checksumSha256?: string
-}
-
-/** One write-once upload request. */
+/** One upload request. */
 export interface PutObjectInput {
   key: string
   data: Uint8Array
@@ -63,9 +54,6 @@ export interface PutObjectInput {
   /** Non-authoritative object metadata kept for bucket-side inspection. */
   metadata: Readonly<Record<string, string>>
 }
-
-/** Whether an upload created the object or found the same key already present. */
-export type PutOutcome = 'stored' | 'exists'
 
 /** Options for one bounded object read. */
 export interface GetObjectOptions {
@@ -79,25 +67,20 @@ export interface GetObjectOptions {
 }
 
 /**
- * Write-once object storage. Implementations report a missing object as
- * `undefined` rather than by throwing; every other failure throws.
+ * Object storage. Implementations report a missing object as `undefined`
+ * rather than by throwing; every other failure throws.
  */
 export interface ObjectClient {
   /**
-   * Read one object's metadata.
-   * @param key - full object key.
-   * @param signal - optional cancellation.
-   * @returns the stored metadata, or `undefined` when the key is absent.
-   */
-  head(key: string, signal?: AbortSignal): Promise<ObjectHead | undefined>
-
-  /**
-   * Upload one object, never overwriting an existing key.
+   * Upload one object.
+   *
+   * Keys are content addresses, so an upload that finds the key taken writes
+   * exactly the bytes already there — an upload is therefore idempotent and
+   * needs no precondition.
    * @param input - key, bytes, and integrity metadata.
    * @param signal - optional cancellation.
-   * @returns `stored` when this call created the object, `exists` when the key was already taken.
    */
-  put(input: PutObjectInput, signal?: AbortSignal): Promise<PutOutcome>
+  put(input: PutObjectInput, signal?: AbortSignal): Promise<void>
 
   /**
    * Read one object's bytes, bounded by `maxBytes`.
@@ -121,12 +104,6 @@ function errorFacts(error: unknown): { name: string | undefined; status: number 
 function isNotFound(error: unknown): boolean {
   const { name, status } = errorFacts(error)
   return name === 'NotFound' || name === 'NoSuchKey' || status === 404
-}
-
-/** Whether a conditional write lost: the key already exists. */
-function isPreconditionFailed(error: unknown): boolean {
-  const { name, status } = errorFacts(error)
-  return name === 'PreconditionFailed' || status === 412
 }
 
 /**
@@ -160,45 +137,19 @@ export function createS3ObjectClient(options: S3ObjectClientOptions): ObjectClie
   const bucket = options.bucket
 
   return {
-    async head(key, signal) {
-      try {
-        const response = await client.send(
-          new HeadObjectCommand({ Bucket: bucket, Key: key, ChecksumMode: 'ENABLED' }),
-          requestOptions(signal),
-        )
-        return {
-          bytes: response.ContentLength ?? 0,
-          ...(response.ChecksumSHA256 !== undefined ? { checksumSha256: response.ChecksumSHA256 } : {}),
-        }
-      } catch (error) {
-        if (isNotFound(error)) return undefined
-        throw error
-      }
-    },
-
     async put(input, signal) {
-      try {
-        await client.send(
-          new PutObjectCommand({
-            Bucket: bucket,
-            Key: input.key,
-            Body: input.data,
-            ContentLength: input.data.byteLength,
-            ContentType: input.mediaType,
-            ChecksumSHA256: input.checksumSha256,
-            Metadata: { ...input.metadata },
-            // Content-addressed keys are immutable, so a taken key is never
-            // ours to replace: the conditional write turns a concurrent
-            // upload of the same bytes into a cheap, explicit outcome.
-            IfNoneMatch: '*',
-          }),
-          requestOptions(signal),
-        )
-        return 'stored'
-      } catch (error) {
-        if (isPreconditionFailed(error)) return 'exists'
-        throw error
-      }
+      await client.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: input.key,
+          Body: input.data,
+          ContentLength: input.data.byteLength,
+          ContentType: input.mediaType,
+          ChecksumSHA256: input.checksumSha256,
+          Metadata: { ...input.metadata },
+        }),
+        requestOptions(signal),
+      )
     },
 
     async get(key, { signal, maxBytes }) {

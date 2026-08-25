@@ -50,7 +50,7 @@ describe('S3 object client', () => {
     const { endpoint, objects, seen } = await service()
     const s3 = client(endpoint)
 
-    const outcome = await s3.put({
+    await s3.put({
       key: 'attachments/v1/objects/ab/abc',
       data: PNG,
       mediaType: 'image/png',
@@ -58,25 +58,13 @@ describe('S3 object client', () => {
       metadata: { width: '1', height: '1' },
     })
 
-    expect(outcome).toBe('stored')
     expect(objects.get('attachments/v1/objects/ab/abc')).toEqual(PNG)
     const request = seen[0]
     expect(request?.method).toBe('PUT')
     expect(request?.url.split('?')[0]).toBe('/dsh-attachments/attachments/v1/objects/ab/abc')
-    expect(request?.headers['if-none-match']).toBe('*')
     expect(request?.headers['content-type']).toBe('image/png')
     expect(request?.headers['x-amz-checksum-sha256']).toBe(CHECKSUM)
     expect(request?.headers['x-amz-meta-width']).toBe('1')
-  })
-
-  it('reports a key another writer already took instead of overwriting it', async () => {
-    const { endpoint, objects } = await service()
-    const s3 = client(endpoint)
-    const input = { key: 'k', data: PNG, mediaType: 'image/png' as const, checksumSha256: CHECKSUM, metadata: {} }
-
-    await expect(s3.put(input)).resolves.toBe('stored')
-    await expect(s3.put({ ...input, data: Uint8Array.of(1) })).resolves.toBe('exists')
-    expect(objects.get('k')).toEqual(PNG)
   })
 
   it('reads metadata and bytes, bounding the transfer with a range request', async () => {
@@ -84,24 +72,14 @@ describe('S3 object client', () => {
     const s3 = client(endpoint)
     await s3.put({ key: 'k', data: PNG, mediaType: 'image/png', checksumSha256: CHECKSUM, metadata: {} })
 
-    await expect(s3.head('k')).resolves.toEqual({ bytes: PNG.byteLength, checksumSha256: CHECKSUM })
     await expect(s3.get('k', { maxBytes: PNG.byteLength })).resolves.toEqual(PNG)
     expect(seen.at(-1)?.headers.range).toBe(`bytes=0-${PNG.byteLength}`)
   })
 
-  it('reports metadata without a checksum when the service stores none', async () => {
-    const { endpoint } = await service({ checksums: false })
-    const s3 = client(endpoint)
-    await s3.put({ key: 'k', data: PNG, mediaType: 'image/png', checksumSha256: CHECKSUM, metadata: {} })
-
-    await expect(s3.head('k')).resolves.toEqual({ bytes: PNG.byteLength })
-  })
-
-  it('reports an absent key as undefined from both read paths', async () => {
+  it('reports an absent key as undefined', async () => {
     const { endpoint } = await service()
     const s3 = client(endpoint)
 
-    await expect(s3.head('missing')).resolves.toBeUndefined()
     await expect(s3.get('missing', { maxBytes: 10 })).resolves.toBeUndefined()
   })
 
@@ -110,13 +88,6 @@ describe('S3 object client', () => {
     const s3 = client(endpoint.replace(/:\d+$/, ':1'))
 
     await expect(s3.get('k', { maxBytes: 10 })).rejects.toThrow()
-  })
-
-  it('propagates a metadata-read failure instead of reporting the key as absent', async () => {
-    const { endpoint } = await service()
-    const s3 = client(endpoint.replace(/:\d+$/, ':1'))
-
-    await expect(s3.head('k')).rejects.toThrow()
   })
 
   it('propagates an upload failure instead of reporting the key as taken', async () => {
