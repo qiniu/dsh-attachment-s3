@@ -2,7 +2,7 @@
  * Content-addressed attachment storage over the object-store port: admission,
  * write-once publication with dedup verification, and bounded verified reads.
  *
- * @module @qiniu/dsh-attachment-s3/store
+ * @module dsh-attachment-s3/store
  */
 
 import { createHash } from 'node:crypto'

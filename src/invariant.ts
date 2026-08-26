@@ -1,9 +1,9 @@
-/** Package-owned invariant companion for `@qiniu/dsh-attachment-s3`. @module @qiniu/dsh-attachment-s3/invariant */
+/** Package-owned invariant companion for `dsh-attachment-s3`. @module dsh-attachment-s3/invariant */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 
-const PACKAGE_NAME = '@qiniu/dsh-attachment-s3'
+const PACKAGE_NAME = 'dsh-attachment-s3'
 /** Cordis companion plugin name. */
 export const name = 'attachment-s3-invariant'
 /** Services required before package ownership can be reserved. */

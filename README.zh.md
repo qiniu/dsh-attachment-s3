@@ -1,4 +1,4 @@
-# @qiniu/dsh-attachment-s3
+# dsh-attachment-s3
 
 [English](README.md) | 中文
 
@@ -9,7 +9,7 @@ bucket 对模型完全不可见：写进会话日志的仍是那个不透明的 
 ## 安装
 
 ```sh
-dsh plugin --profile <name> add @qiniu/dsh-attachment-s3
+dsh plugin --profile <name> add dsh-attachment-s3
 export DSH_ATTACHMENT_S3_BUCKET=my-attachments
 export DSH_ATTACHMENT_S3_REGION=us-east-1
 dsh --profile <name>
@@ -21,7 +21,7 @@ dsh --profile <name>
 dsh --profile <name> --dump-config | grep -A2 'id: attachment'
 ```
 
-`dsh plugin --profile <name> remove @qiniu/dsh-attachment-s3` 会撤销安装并恢复本地后端。
+`dsh plugin --profile <name> remove dsh-attachment-s3` 会撤销安装并恢复本地后端。
 
 ### 环境变量
 
@@ -43,7 +43,7 @@ bundle patch 在挂载时从环境读取配置。`DSH_` 前缀的名字必须来
 
 ```yaml
 - id: attachment-s3
-  name: '@qiniu/dsh-attachment-s3'
+  name: 'dsh-attachment-s3'
   config:
     bucket: my-attachments
     region: us-east-1

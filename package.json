@@ -1,7 +1,7 @@
 {
-  "name": "@qiniu/dsh-attachment-s3",
+  "name": "dsh-attachment-s3",
   "description": "Content-addressed S3 attachment storage for the DeepSeek Harness attachment seam",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "license": "MIT",
   "keywords": [

@@ -8,7 +8,7 @@
  * them. The S3 implementation owns bucket addressing, encryption, checksum
  * transport, and error classification.
  *
- * @module @qiniu/dsh-attachment-s3/client
+ * @module dsh-attachment-s3/client
  */
 
 import {
