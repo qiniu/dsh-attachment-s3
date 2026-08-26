@@ -2,7 +2,7 @@
  * S3 attachment backend: content-addressed immutable objects in one bucket,
  * registered on the harness attachment seam (`ctx.attachments`).
  *
- * @module @qiniu/dsh-attachment-s3
+ * @module dsh-attachment-s3
  */
 
 import { join, resolve } from 'node:path'
